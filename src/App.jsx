@@ -5,6 +5,16 @@ import {
   ClipboardPaste, LayoutGrid, ArrowUpRight, ArrowDownRight, RefreshCw
 } from "lucide-react";
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from "recharts";
+import {
+  fetchItems,
+  fetchMovements,
+  insertItem,
+  deleteItemById,
+  updateItemStock,
+  insertMovement,
+  clearAllData,
+  subscribeToChanges,
+} from "./lib/db";
 
 /* ---------------------------------------------------------------
    Estoque — Copa & Limpeza
@@ -71,34 +81,6 @@ function seedMovements(items) {
     id: uid(), itemId: find(name), type, quantity, date: daysAgo(days), note: "", source: "manual",
   })).filter((m) => m.itemId);
 }
-
-/* ------------------------- Camada de Persistência ------------------------- */
-
-const Storage = {
-  get: async (key) => {
-    try {
-      if (typeof window.storage !== "undefined" && window.storage.get) {
-        const res = await window.storage.get(key, true);
-        return res ? JSON.parse(res.value) : null;
-      }
-      const item = localStorage.getItem(key);
-      return item ? JSON.parse(item) : null;
-    } catch {
-      return null;
-    }
-  },
-  set: async (key, value) => {
-    try {
-      if (typeof window.storage !== "undefined" && window.storage.set) {
-        await window.storage.set(key, JSON.stringify(value), true);
-        return;
-      }
-      localStorage.setItem(key, JSON.stringify(value));
-    } catch (e) {
-      console.error("Erro ao salvar dados localmente", e);
-    }
-  }
-};
 
 /* ------------------------- Helper do Google Gemini ------------------------- */
 
@@ -259,28 +241,25 @@ export default function App() {
 
   const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(null), 2800); };
 
+  const reload = useCallback(async () => {
+    try {
+      const [its, movs] = await Promise.all([fetchItems(), fetchMovements()]);
+      setItems(its);
+      setMovements(movs);
+    } catch (e) {
+      showToast("Erro ao carregar do banco: " + (e.message || "verifique a conexão com o Supabase."));
+    }
+  }, []);
+
   useEffect(() => {
-    (async () => {
-      const data = await Storage.get("estoque-data");
-      if (data && Array.isArray(data.items)) {
-        setItems(data.items);
-        setMovements(data.movements || []);
-      } else {
-        const its = seedItems();
-        const movs = seedMovements(its);
-        setItems(its);
-        setMovements(movs);
-        await Storage.set("estoque-data", { items: its, movements: movs });
-      }
-      setReady(true);
-    })();
-  }, []);
+    reload().then(() => setReady(true));
+    // Mantém a equipe sincronizada: qualquer mudança feita por outra pessoa
+    // (em outro navegador/dispositivo) atualiza esta tela automaticamente.
+    const unsubscribe = subscribeToChanges(() => reload());
+    return unsubscribe;
+  }, [reload]);
 
-  const persist = useCallback(async (nextItems, nextMovements) => {
-    await Storage.set("estoque-data", { items: nextItems, movements: nextMovements });
-  }, []);
-
-  const addItem = (item) => {
+  const addItem = async (item) => {
     if (!item.name || !item.name.trim()) {
       showToast("O nome do item é obrigatório.");
       return;
@@ -290,34 +269,41 @@ export default function App() {
       showToast(`O item "${item.name}" já está cadastrado.`);
       return;
     }
-    const newItem = { ...item, id: uid(), createdAt: new Date().toISOString() };
-    const next = [...items, newItem];
-    setItems(next);
-    persist(next, movements);
-    showToast(`"${item.name}" adicionado ao estoque.`);
-    return newItem;
-  };
-
-  const removeItem = (id) => {
-    const item = items.find((i) => i.id === id);
-    const next = items.filter((i) => i.id !== id);
-    const nextMovs = movements.filter((m) => m.itemId !== id);
-    setItems(next);
-    setMovements(nextMovs);
-    persist(next, nextMovs);
-    showToast(`"${item?.name || 'Item'}" removido.`);
-  };
-
-  const clearDemoData = () => {
-    if (window.confirm("Deseja realmente limpar todos os dados do estoque e histórico?")) {
-      setItems([]);
-      setMovements([]);
-      persist([], []);
-      showToast("Todos os dados do estoque foram limpos.");
+    try {
+      const newItem = await insertItem(item);
+      setItems((prev) => [...prev, newItem]);
+      showToast(`"${item.name}" adicionado ao estoque.`);
+      return newItem;
+    } catch (e) {
+      showToast("Erro ao salvar item: " + (e.message || ""));
     }
   };
 
-  const addMovement = (itemId, type, quantity, note = "", source = "manual") => {
+  const removeItem = async (id) => {
+    const item = items.find((i) => i.id === id);
+    try {
+      await deleteItemById(id);
+      setItems((prev) => prev.filter((i) => i.id !== id));
+      setMovements((prev) => prev.filter((m) => m.itemId !== id));
+      showToast(`"${item?.name || 'Item'}" removido.`);
+    } catch (e) {
+      showToast("Erro ao remover item: " + (e.message || ""));
+    }
+  };
+
+  const clearDemoData = () => {
+    if (window.confirm("Deseja realmente limpar todos os dados do estoque e histórico? Isso afeta todos da equipe.")) {
+      clearAllData()
+        .then(() => {
+          setItems([]);
+          setMovements([]);
+          showToast("Todos os dados do estoque foram limpos.");
+        })
+        .catch((e) => showToast("Erro ao limpar dados: " + (e.message || "")));
+    }
+  };
+
+  const addMovement = async (itemId, type, quantity, note = "", source = "manual") => {
     const q = Number(quantity);
     if (!itemId || isNaN(q) || q <= 0) {
       showToast("Quantidade ou item inválido.");
@@ -336,15 +322,21 @@ export default function App() {
     }
 
     const delta = type === "entrada" ? q : -q;
-    const nextItems = items.map((i) => i.id === itemId ? { ...i, currentStock: Math.max(0, i.currentStock + delta) } : i);
-    const mov = { id: uid(), itemId, type, quantity: q, date: new Date().toISOString(), note, source };
-    const nextMovs = [mov, ...movements];
+    const nextStock = Math.max(0, item.currentStock + delta);
 
-    setItems(nextItems);
-    setMovements(nextMovs);
-    persist(nextItems, nextMovs);
-    showToast(`${type === "entrada" ? "Entrada" : "Saída"} de ${q} ${item.unit} — ${item.name}`);
-    return mov;
+    try {
+      const [updatedItem, mov] = await Promise.all([
+        updateItemStock(itemId, nextStock),
+        insertMovement({ itemId, type, quantity: q, note, source }),
+      ]);
+      setItems((prev) => prev.map((i) => (i.id === itemId ? updatedItem : i)));
+      setMovements((prev) => [mov, ...prev]);
+      showToast(`${type === "entrada" ? "Entrada" : "Saída"} de ${q} ${item.unit} — ${item.name}`);
+      return mov;
+    } catch (e) {
+      showToast("Erro ao registrar movimentação: " + (e.message || ""));
+      return null;
+    }
   };
 
   const weeklyConsumption = (itemId) => {
