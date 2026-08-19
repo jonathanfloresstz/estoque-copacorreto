@@ -113,7 +113,7 @@ async function callGemini({ system, contents, mimeType, base64Data }) {
     throw new Error("Chave de API do Gemini não configurada.");
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${cleanKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${cleanKey}`;
 
   const parts = [];
 
