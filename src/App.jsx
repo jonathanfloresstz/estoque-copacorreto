@@ -108,11 +108,12 @@ const GEMINI_API_KEY =
   "";
 
 async function callGemini({ system, contents, mimeType, base64Data }) {
-  if (!GEMINI_API_KEY) {
-    throw new Error("Chave de API do Gemini não configurada (VITE_GEMINI_API_KEY).");
+  const cleanKey = GEMINI_API_KEY.trim();
+  if (!cleanKey) {
+    throw new Error("Chave de API do Gemini não configurada.");
   }
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${cleanKey}`;
 
   const parts = [];
 
@@ -141,13 +142,16 @@ async function callGemini({ system, contents, mimeType, base64Data }) {
 
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "x-goog-api-key": cleanKey,
+    },
     body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
     const errorData = await response.json().catch(() => ({}));
-    throw new Error(errorData.error?.message || `Erro API Gemini: ${response.status}`);
+    throw new Error(errorData.error?.message || `Erro API Gemini (${response.status})`);
   }
 
   const data = await response.json();
@@ -494,7 +498,7 @@ function PainelTab({ items, lowStock, movements, weeklyConsumption, daysRemainin
       setInsight(text.trim());
     } catch (err) {
       showToast(err.message || "Erro ao conectar com o Gemini.");
-      setInsight("Não foi possível gerar a análise do Gemini. Verifique a chave de API.");
+      setInsight(`Não foi possível gerar a análise. (${err.message})`);
     }
     setLoadingInsight(false);
   };
@@ -845,7 +849,7 @@ Regras:
       setMessages((cur) => [...cur, { role: "assistant", content: parsed.reply, action: parsed.action, confirmed: false }]);
     } catch (err) {
       showToast("Erro na comunicação com a API do Gemini.");
-      setMessages((cur) => [...cur, { role: "assistant", content: "Não foi possível se conectar ao serviço do Gemini. Verifique sua chave de API." }]);
+      setMessages((cur) => [...cur, { role: "assistant", content: `Não foi possível se conectar ao serviço do Gemini. (${err.message})` }]);
     }
     setSending(false);
   };
