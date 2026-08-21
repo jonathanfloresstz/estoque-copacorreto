@@ -1,40 +1,43 @@
 import { useEffect, useState } from 'react';
-import { redis } from './lib/redis'; // Ajuste o caminho se seu arquivo estiver em outro diretório
+import { buscarEstoque, salvarEstoqueNaNuvem } from './actions'; // Importa as ações do servidor
 
 export default function App() {
   const [estoque, setEstoque] = useState([]);
   const [loading, setLoading] = useState(true);
 
-  // 1. CARREGAR DADOS DO UPSTASH REDIS QUANDO A PÁGINA ABRE
+  // 1. CARREGAR DADOS DO SERVIDOR QUANDO A PÁGINA ABRE
   useEffect(() => {
-    async function carregarEstoque() {
+    async function carregar() {
       try {
         setLoading(true);
-        const dadosSalvos = await redis.get('estoque_copa_limpeza');
-        if (dadosSalvos) {
-          setEstoque(dadosSalvos);
-        }
+        const dados = await buscarEstoque();
+        setEstoque(dados);
       } catch (error) {
-        console.error('Erro ao buscar dados no Redis:', error);
+        console.error('Erro ao carregar dados:', error);
       } finally {
         setLoading(false);
       }
     }
 
-    carregarEstoque();
+    carregar();
   }, []);
 
-  // 2. FUNÇÃO PARA SALVAR ALTERAÇÕES (Adicionar, remover, movimentar item)
+  // 2. FUNÇÃO PARA SALVAR COM ATUALIZAÇÃO OTIMISTA E ROLLBACK
   const salvarEstoque = async (novoEstoque) => {
-    // Atualiza o estado da tela imediatamente para não haver travamentos
+    const estoqueAnterior = estoque; // Salva o estado atual para caso ocorra erro
+    
+    // Atualiza a tela imediatamente (Optimistic Update)
     setEstoque(novoEstoque);
 
-    // Envia e grava os dados permanentemente no banco de dados da Vercel / Upstash
     try {
-      await redis.set('estoque_copa_limpeza', novoEstoque);
+      // Envia os dados para a Server Action de forma segura
+      await salvarEstoqueNaNuvem(novoEstoque);
     } catch (error) {
-      console.error('Erro ao salvar dados no Redis:', error);
-      alert('Houve um erro ao salvar os dados na nuvem.');
+      console.error('Erro ao salvar dados na nuvem:', error);
+      alert('Houve um erro ao salvar os dados na nuvem. Suas alterações na tela foram revertidas.');
+      
+      // ROLLBACK: Reverte o estado visual para o que estava antes do erro
+      setEstoque(estoqueAnterior);
     }
   };
 
